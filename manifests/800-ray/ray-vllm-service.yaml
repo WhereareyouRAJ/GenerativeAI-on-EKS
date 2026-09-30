@@ -17,7 +17,9 @@ spec:
               engine_kwargs:
                 dtype: bfloat16
                 max_model_len: 8192
-                gpu_memory_utilization: 0.9
+                gpu_memory_utilization: 0.95
+                limit_mm_per_prompt:
+                  image: 0
                 trust_remote_code: true
                 enable_chunked_prefill: true
                 max_num_seqs: 4

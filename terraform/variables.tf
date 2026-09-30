@@ -59,7 +59,7 @@ variable "model_prefix" {
 variable "gpu_instance_types" {
   description = "Instance types for GPU nodes (ordered by preference for ODCR failover)"
   type        = list(string)
-  default     = ["g6e.xlarge", "g6e.2xlarge", "g6e.4xlarge", "g6e.8xlarge"]
+  default     = ["g5.2xlarge", "g5.4xlarge", "g5.8xlarge"]
 }
 
 variable "ingress_inbound_cidrs" {
@@ -71,13 +71,13 @@ variable "ingress_inbound_cidrs" {
 variable "enable_valkey" {
   description = "Provision an ElastiCache Serverless Valkey cache for LMCache remote cache sharing"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "enable_rag" {
   description = "Provision RAG storage and workload identity resources; disabling after use deletes stored documents and vectors"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "enable_strands" {
