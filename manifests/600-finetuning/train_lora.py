@@ -1,7 +1,7 @@
 """
 LoRA Fine-tuning script for AnyVC (Venture Capital Advisor)
-Base model: Ministral-3-8B-Instruct-2512
-Runs on a single NVIDIA L40S GPU (g6e.2xlarge, 48GB VRAM)
+Base model: Ministral-3-8B-Instruct-2512-BF16
+Runs on a single NVIDIA A10G GPU (g5.2xlarge, 24GB VRAM)
 """
 
 import os
@@ -11,7 +11,6 @@ import torch
 from datasets import Dataset
 from transformers import (
     AutoTokenizer,
-    FineGrainedFP8Config,
     Mistral3ForConditionalGeneration,
     TrainingArguments,
 )
@@ -29,7 +28,7 @@ LEARNING_RATE = float(os.getenv("LEARNING_RATE", "2e-4"))
 MAX_SEQ_LENGTH = int(os.getenv("MAX_SEQ_LENGTH", "1024"))
 LORA_RANK = int(os.getenv("LORA_RANK", "16"))
 LORA_ALPHA = int(os.getenv("LORA_ALPHA", "32"))
-HF_MODEL_ID = os.getenv("HF_MODEL_ID", "mistralai/Ministral-3-8B-Instruct-2512")
+HF_MODEL_ID = os.getenv("HF_MODEL_ID", "mistralai/Ministral-3-8B-Instruct-2512-BF16")
 
 print("=" * 60)
 print("  LoRA Fine-tuning: AnyVC Startup Advisor")
@@ -74,10 +73,10 @@ if tokenizer.pad_token is None:
 tokenizer.padding_side = "right"
 
 # Step 4: Load model
-print("\n[4/8] Loading model (FP8 → BF16)...")
+print("\n[4/8] Loading model (BF16)...")
 model = Mistral3ForConditionalGeneration.from_pretrained(
     HF_MODEL_ID,
-    quantization_config=FineGrainedFP8Config(dequantize=True),
+    dtype=torch.bfloat16,
     device_map="auto",
     trust_remote_code=True,
     attn_implementation="eager",

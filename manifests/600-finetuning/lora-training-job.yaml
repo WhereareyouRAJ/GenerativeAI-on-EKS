@@ -36,7 +36,7 @@ spec:
               python /scripts/train_lora.py
           env:
             - name: HF_MODEL_ID
-              value: "mistralai/Ministral-3-8B-Instruct-2512"
+              value: "mistralai/Ministral-3-8B-Instruct-2512-BF16"
             - name: MODEL_PATH
               value: "/models/Ministral-3-8B-Instruct-2512"
             - name: DATASET_PATH

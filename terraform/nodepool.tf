@@ -31,7 +31,12 @@ resource "kubectl_manifest" "eks_node_class_gpu" {
       securityGroupSelectorTerms:
         - tags:
             aws:eks:cluster-name: ${module.eks.cluster_name}
-      
+
+      # Room for the vLLM image (~33 GB unpacked), the training image and
+      # the BF16 model download (~18 GB) on the same node
+      ephemeralStorage:
+        size: 200Gi
+
       # Additional tags for GPU nodes
       tags:
         intent: gpu
