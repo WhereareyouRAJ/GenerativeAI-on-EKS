@@ -88,8 +88,10 @@ resource "kubectl_manifest" "job_model_download" {
                   export MODEL_PREFIX="${trimsuffix(var.model_prefix, "/")}"
                   export LOCAL_DIR="/tmp/$MODEL_PREFIX"
                   
-                  echo "Downloading Ministral-3-8B-Instruct-2512 from HuggingFace..."
-                  python3 -c "from huggingface_hub import snapshot_download; snapshot_download('mistralai/Ministral-3-8B-Instruct-2512', local_dir='$LOCAL_DIR', allow_patterns=['*.json', '*.txt', '*.md', '*.model', 'consolidated.safetensors'])"
+                  # BF16 checkpoint: the FP8 one produces garbage on GPUs without native FP8 (e.g. A10G on g5),
+                  # where vLLM falls back to the Marlin weight-only kernel. Uploaded under the same S3 prefix.
+                  echo "Downloading Ministral-3-8B-Instruct-2512-BF16 from HuggingFace..."
+                  python3 -c "from huggingface_hub import snapshot_download; snapshot_download('mistralai/Ministral-3-8B-Instruct-2512-BF16', local_dir='$LOCAL_DIR', allow_patterns=['*.json', '*.txt', '*.md', '*.model', 'consolidated.safetensors'])"
                   
                   echo "Uploading to S3 bucket: ${aws_s3_bucket.model_storage.bucket}"
                   python3 << EOF
