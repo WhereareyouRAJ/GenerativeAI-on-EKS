@@ -45,129 +45,117 @@
 
 ## The phases
 
-<table>
-<tr>
-<td width="50%" valign="top">
-
 ### 01 · Cluster Setup
+
 <sub><code>terraform/</code></sub>
 
-A single `terraform apply` builds the platform every other phase runs on:
+Terraform builds everything the later phases run on: an EKS Auto Mode cluster, the VPC, an S3 bucket holding the model weights, Amazon Managed Prometheus and Grafana. We ran it in `ap-south-1` on **g5.2xlarge (NVIDIA A10G, 24 GB)** nodes. That GPU can't run the FP8 checkpoint correctly, so we serve the **BF16** model instead.
 
-- EKS Auto Mode cluster with a GPU node pool
-- VPC and networking
-- S3 bucket, plus a job that stages the model weights
-- Amazon Managed Prometheus, Grafana and pre-built dashboards
-- IAM roles for each workload
+**[Step-by-step guide →](./terraform/README.md)**
 
-We ran it in `ap-south-1` on **g5.2xlarge (NVIDIA A10G, 24 GB)**. The FP8 checkpoint gives garbage output on that GPU, because vLLM falls back to the Marlin kernel, so we serve the **BF16** model. We also gave GPU nodes 200 GiB of disk for the images and weights.
-
-[Step-by-step guide →](./terraform/README.md)
-
-</td>
-<td width="50%" valign="top">
+<br/>
 
 ### 02 · Serve a Model
+
 <sub><code>manifests/100-vllm</code></sub>
 
-vLLM streams Ministral 8B from S3 onto the GPU and serves it through an OpenAI-compatible API; the first test returned tokens on vLLM 0.21.0. Open WebUI puts a chat interface in front of the model, behind an Application Load Balancer.
+vLLM streams Ministral 8B from S3 onto the GPU and serves it through an OpenAI-compatible API. Open WebUI puts a chat interface in front of it. The NVIDIA DCGM Exporter and a vLLM ServiceMonitor feed Prometheus, so Grafana shows both GPU health and inference metrics: token rates, time to first token and time per output token.
 
-For observability, the NVIDIA DCGM Exporter and a vLLM ServiceMonitor feed Prometheus. Grafana then shows GPU health (temperature, power, utilization, memory) next to engine metrics: token counts, time to first token and time per output token. Under load our A10G peaked at 52 °C and 214 W.
-
-<a href="./screenshots/vllm-test.png"><img src="./screenshots/vllm-test.png" width="32%" alt="First tokens"/></a>
-<a href="./screenshots/open-webui.png"><img src="./screenshots/open-webui.png" width="32%" alt="Open WebUI"/></a>
-<a href="./screenshots/nvidia-dgcm.png"><img src="./screenshots/nvidia-dgcm.png" width="32%" alt="DCGM dashboard"/></a>
-<a href="./screenshots/vllm-metrics.png"><img src="./screenshots/vllm-metrics.png" width="32%" alt="vLLM metrics"/></a>
-
-[Step-by-step guide →](./manifests/100-vllm/README.md)
-
-</td>
-</tr>
+<table>
 <tr>
-<td width="50%" valign="top">
-
-### 03 · Agentic App
-<sub><code>manifests/200-strands-agent</code></sub>
-
-A Strands agent, packaged as a FastAPI service and pushed to ECR, uses the vLLM model as its reasoning engine. It has two tools: `current_time`, which uses geopy and TimezoneFinder, and `current_weather`, which calls the Open-Meteo API.
-
-Each question takes two model calls. In the first, the model chooses which tool to call; in the second, it turns the tool's result into a natural reply. A new agent is created for every request, so requests never share state.
-
-<a href="./screenshots/agents-in-action.png"><img src="./screenshots/agents-in-action.png" width="100%" alt="Agent in action"/></a>
-
-[Step-by-step guide →](./manifests/200-strands-agent/README.md)
-
-</td>
-<td width="50%" valign="top">
-
-### 04 · Benchmarking
-<sub><code>manifests/300-benchmarking</code></sub>
-
-A Helm-packaged benchmark job loads the model while a dedicated Grafana dashboard tracks the engine.
-
-The **baseline** run (1 req/s, 512-token prompts) completed 60 of 60 requests, with a 250 ms mean time to first token and 45 ms per output token. The **saturation** run stepped from 5 to 10 to 20 req/s. The A10G levelled off at about **2.2 req/s** (roughly 550 output tokens/s). Beyond that, the KV cache stayed near 100%, the waiting queue grew to about 750 requests, preemptions kept climbing, and 22.5% of requests timed out at 20 req/s.
-
-<a href="./screenshots/baseline-scenerio.png"><img src="./screenshots/baseline-scenerio.png" width="32%" alt="Baseline benchmark"/></a>
-<a href="./screenshots/saturation-scenerio.png"><img src="./screenshots/saturation-scenerio.png" width="32%" alt="Saturation benchmark"/></a>
-<a href="./screenshots/benchmark-engine-metrics-1.png"><img src="./screenshots/benchmark-engine-metrics-1.png" width="32%" alt="Engine metrics: cache and queue"/></a>
-<a href="./screenshots/becnhmarking-engine-metrics-2.png"><img src="./screenshots/becnhmarking-engine-metrics-2.png" width="32%" alt="Engine metrics: scheduler"/></a>
-<a href="./screenshots/Screenshot%202026-10-12%20113503.png"><img src="./screenshots/Screenshot%202026-10-12%20113503.png" width="32%" alt="Throughput and latency"/></a>
-<a href="./screenshots/benchmarking-vllm-metrics.png"><img src="./screenshots/benchmarking-vllm-metrics.png" width="32%" alt="vLLM metrics under load"/></a>
-
-[Step-by-step guide →](./manifests/300-benchmarking/README.md)
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-### 05 · KV Cache Offloading
-<sub><code>manifests/400-lmcache</code></sub>
-
-LMCache keeps a prompt's KV tensors after the first request, so a later request with the same prefix skips most of the prefill work. Each test sends a ~4K-token prompt twice, with 90% of the content shared.
-
-With **L1** (CPU RAM on the same pod), the time to first token fell from 4.46 s to 0.27 s, **16.4× faster**. Adding **L2** (ElastiCache Valkey, shared across pods) took it from 5.78 s to 0.50 s, **11.6× faster**. With L2, a newly started pod can reuse the prefix instead of computing it again.
-
-<a href="./screenshots/LMCache-L1.png"><img src="./screenshots/LMCache-L1.png" width="49%" alt="LMCache L1"/></a>
-<a href="./screenshots/LMCache%20L1%20%2B%20L2-test.png"><img src="./screenshots/LMCache%20L1%20%2B%20L2-test.png" width="49%" alt="LMCache L1 + L2"/></a>
-
-[Step-by-step guide →](./manifests/400-lmcache/README.md)
-
-</td>
-<td width="50%" valign="top">
-
-### 06 · Fine-Tuning
-<sub><code>manifests/600-finetuning</code></sub>
-
-LoRA fine-tuning teaches Ministral to act as a startup advisor without retraining the full model:
-
-- **Prepare the dataset:** a startup-advisory Q&A set in JSONL
-- **Train the adapter:** a Kubernetes Job runs the LoRA training script on the GPU
-- **Deploy with LoRA:** vLLM serves the adapter next to the base model
-- **Compare results:** the same prompts sent to the base model and to the fine-tuned model
-
-We changed the training to load the BF16 checkpoint directly, instead of dequantizing FP8, so it fits on a single 24 GB A10G rather than a 48 GB L40S.
-
-[Step-by-step guide →](./manifests/600-finetuning/README.md)
-
-</td>
-</tr>
-<tr>
-<td colspan="2" valign="top">
-
-### 07 · RAG
-<sub><code>manifests/700-rag</code></sub>
-
-Retrieval-augmented generation grounds the model in our own data. A processing job chunks and embeds a product catalogue into an S3 vector store, a RAG service retrieves the closest matches for each question, and a Gradio app answers the same question twice: once from the model alone and once with the retrieved context. The plain model answers in generalities. The RAG answer names the actual products, such as *PowerBook Pro*, *UltraBook Slim* and *SmartBulb Color*, and shows the source chunks with their similarity scores.
-
-<a href="./screenshots/RAG-test.png"><img src="./screenshots/RAG-test.png" width="49%" alt="RAG comparison: laptops"/></a>
-<a href="./screenshots/RAG-test-2.png"><img src="./screenshots/RAG-test-2.png" width="49%" alt="RAG comparison: smart bulbs"/></a>
-
-[Step-by-step guide →](./manifests/700-rag/README.md)
-
-</td>
+<td align="center" valign="top"><a href="./screenshots/vllm-test.png"><img src="./screenshots/vllm-test.png" width="220" alt="First tokens"/></a><br/><sub>First tokens over the API</sub></td>
+<td align="center" valign="top"><a href="./screenshots/open-webui.png"><img src="./screenshots/open-webui.png" width="220" alt="Open WebUI"/></a><br/><sub>Chatting in Open WebUI</sub></td>
+<td align="center" valign="top"><a href="./screenshots/nvidia-dgcm.png"><img src="./screenshots/nvidia-dgcm.png" width="220" alt="DCGM dashboard"/></a><br/><sub>GPU at 52 °C / 214 W peak</sub></td>
+<td align="center" valign="top"><a href="./screenshots/vllm-metrics.png"><img src="./screenshots/vllm-metrics.png" width="220" alt="vLLM dashboard"/></a><br/><sub>vLLM engine metrics</sub></td>
 </tr>
 </table>
+
+**[Step-by-step guide →](./manifests/100-vllm/README.md)**
+
+<br/>
+
+### 03 · Agentic App
+
+<sub><code>manifests/200-strands-agent</code></sub>
+
+A Strands agent, packaged as a FastAPI service, uses the vLLM model as its reasoning engine and has two tools: one for current time and one for live weather. Each question takes two model calls. In the first, the model chooses a tool; in the second, it turns the tool's result into a natural-language answer.
+
+<table>
+<tr>
+<td align="center" valign="top"><a href="./screenshots/agents-in-action.png"><img src="./screenshots/agents-in-action.png" width="460" alt="Agent in action"/></a><br/><sub>Live time in Dallas, weather in Denver</sub></td>
+</tr>
+</table>
+
+**[Step-by-step guide →](./manifests/200-strands-agent/README.md)**
+
+<br/>
+
+### 04 · Benchmarking
+
+<sub><code>manifests/300-benchmarking</code></sub>
+
+We load-tested the model with a Helm-packaged benchmark job and watched it on a dedicated Grafana dashboard. The **baseline** run (1 req/s, 512-token prompts) completed every request with a 250 ms mean time to first token and 45 ms per output token. The **saturation** run stepped from 5 to 20 req/s. The A10G topped out at about 2.2 req/s (roughly 550 output tokens/s). Beyond that, the KV cache stayed near 100%, requests piled up in the queue, and 22.5% timed out at the highest rate.
+
+<table>
+<tr>
+<td align="center" valign="top"><a href="./screenshots/baseline-scenerio.png"><img src="./screenshots/baseline-scenerio.png" width="220" alt="Baseline benchmark"/></a><br/><sub>Baseline: 60 / 60 succeeded</sub></td>
+<td align="center" valign="top"><a href="./screenshots/saturation-scenerio.png"><img src="./screenshots/saturation-scenerio.png" width="220" alt="Saturation benchmark"/></a><br/><sub>Saturation: 5 → 20 req/s</sub></td>
+<td align="center" valign="top"><a href="./screenshots/Screenshot%202026-10-12%20113503.png"><img src="./screenshots/Screenshot%202026-10-12%20113503.png" width="220" alt="Latency panels"/></a><br/><sub>Throughput and latency</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top"><a href="./screenshots/benchmark-engine-metrics-1.png"><img src="./screenshots/benchmark-engine-metrics-1.png" width="220" alt="Engine metrics"/></a><br/><sub>Cache and queue under load</sub></td>
+<td align="center" valign="top"><a href="./screenshots/becnhmarking-engine-metrics-2.png"><img src="./screenshots/becnhmarking-engine-metrics-2.png" width="220" alt="Scheduler state"/></a><br/><sub>Scheduler state and request lengths</sub></td>
+<td align="center" valign="top"><a href="./screenshots/benchmarking-vllm-metrics.png"><img src="./screenshots/benchmarking-vllm-metrics.png" width="220" alt="vLLM metrics under load"/></a><br/><sub>Preemptions climbing</sub></td>
+</tr>
+</table>
+
+**[Step-by-step guide →](./manifests/300-benchmarking/README.md)**
+
+<br/>
+
+### 05 · KV Cache Offloading
+
+<sub><code>manifests/400-lmcache</code></sub>
+
+LMCache keeps a prompt's KV tensors after the first request, so a repeat request with the same prefix skips most of the prefill work. With **L1** (CPU RAM on the same pod), time to first token for a 4K-token prompt dropped from 4.46 s to 0.27 s, **16.4× faster**. Adding **L2** (Valkey, shared across pods) took it from 5.78 s to 0.50 s, **11.6× faster**, and new pods can reuse the cache too.
+
+<table>
+<tr>
+<td align="center" valign="top"><a href="./screenshots/LMCache-L1.png"><img src="./screenshots/LMCache-L1.png" width="340" alt="LMCache L1"/></a><br/><sub>L1 CPU RAM: 16.4× faster TTFT</sub></td>
+<td align="center" valign="top"><a href="./screenshots/LMCache%20L1%20%2B%20L2-test.png"><img src="./screenshots/LMCache%20L1%20%2B%20L2-test.png" width="340" alt="LMCache L1 + L2"/></a><br/><sub>L1 + L2 Valkey: 11.6× faster TTFT</sub></td>
+</tr>
+</table>
+
+**[Step-by-step guide →](./manifests/400-lmcache/README.md)**
+
+<br/>
+
+### 06 · Fine-Tuning
+
+<sub><code>manifests/600-finetuning</code></sub>
+
+LoRA fine-tuning on a startup-advisor dataset, then serving the adapter next to the base model in vLLM. We changed the training job to load the BF16 checkpoint directly, so it fits a single 24 GB A10G.
+
+**[Step-by-step guide →](./manifests/600-finetuning/README.md)**
+
+<br/>
+
+### 07 · RAG
+
+<sub><code>manifests/700-rag</code></sub>
+
+A retrieval-augmented generation pipeline: a job embeds a product catalogue into an S3 vector store, and a Gradio app answers the same question twice, once from the model alone and once with retrieved context. Side by side, the RAG answer cites the actual products and their similarity scores, while the plain model answers in generalities.
+
+<table>
+<tr>
+<td align="center" valign="top"><a href="./screenshots/RAG-test.png"><img src="./screenshots/RAG-test.png" width="340" alt="RAG comparison"/></a><br/><sub>Laptops: generic vs grounded</sub></td>
+<td align="center" valign="top"><a href="./screenshots/RAG-test-2.png"><img src="./screenshots/RAG-test-2.png" width="340" alt="RAG with retrieved context"/></a><br/><sub>Smart bulbs, with retrieved context</sub></td>
+</tr>
+</table>
+
+**[Step-by-step guide →](./manifests/700-rag/README.md)**
+
+<br/>
 
 ## Cleanup
 
